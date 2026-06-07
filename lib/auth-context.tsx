@@ -1,6 +1,7 @@
 "use client"
-
-import { createContext, useContext, useState, ReactNode } from 'react'
+import { createContext, useContext, useState, useEffect, ReactNode } from 'react'
+import { supabase } from '@/lib/supabase'
+import type { Session } from '@supabase/supabase-js'
 
 export type UserRole = 'student' | 'parent' | 'tutor' | 'admin'
 
@@ -18,95 +19,73 @@ export interface User {
   linkedChildId?: string
 }
 
-// Mock users for testing different roles
-export const mockUsers: Record<UserRole, User> = {
-  student: {
-    id: 'student-001',
-    name: 'Ahmad Hassan',
-    email: 'ahmad.h@hifzacademy.edu',
-    role: 'student',
-    avatar: 'avatar-1',
-    grade: '8th Grade',
-  },
-  parent: {
-    id: 'parent-001',
-    name: 'Fatima Hassan',
-    email: 'fatima.h@email.com',
-    role: 'parent',
-    avatar: 'avatar-2',
-    linkedChildId: 'student-001',
-  },
-  tutor: {
-    id: 'tutor-001',
-    name: 'Yusuf Ali',
-    email: 'yusuf.a@hifzacademy.edu',
-    role: 'tutor',
-    avatar: 'avatar-3',
-    grade: '11th Grade',
-    subjects: ['Mathematics', 'Science'],
-    isApproved: true,
-    pendingHours: 4.5,
-    approvedHours: 28,
-  },
-  admin: {
-    id: 'admin-001',
-    name: 'Dr. Sarah Ahmed',
-    email: 'sarah.ahmed@hifzacademy.edu',
-    role: 'admin',
-    avatar: 'avatar-4',
-  },
-}
-
-// Mock pending tutor for testing approval flow
-export const pendingTutor: User = {
-  id: 'tutor-002',
-  name: 'Mariam Khan',
-  email: 'mariam.k@hifzacademy.edu',
-  role: 'tutor',
-  avatar: 'avatar-5',
-  grade: '10th Grade',
-  subjects: ['ELA/English', 'Islamic Studies'],
-  isApproved: false,
-  pendingHours: 0,
-  approvedHours: 0,
-}
-
 interface AuthContextType {
   user: User | null
   isAuthenticated: boolean
-  login: (role: UserRole) => void
-  logout: () => void
+  login: (email: string, password: string) => Promise<{ error?: string }>
+  logout: () => Promise
   switchRole: (role: UserRole) => void
 }
 
-const AuthContext = createContext<AuthContextType | undefined>(undefined)
+const AuthContext = createContext(undefined)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<User | null>(null)
+  const [user, setUser] = useState(null)
 
-  const login = (role: UserRole) => {
-    setUser(mockUsers[role])
+  const buildUser = async (session: Session): Promise => {
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', session.user.id)
+      .single()
+    if (!profile) return null
+    return {
+      id: session.user.id,
+      name: profile.full_name || session.user.email?.split('@')[0] || 'User',
+      email: session.user.email || '',
+      role: profile.role as UserRole,
+      avatar: profile.avatar_url || 'avatar-1',
+      isApproved: profile.is_approved,
+      pendingHours: profile.pending_hours || 0,
+      approvedHours: profile.approved_hours || 0,
+    }
   }
 
-  const logout = () => {
+  useEffect(() => {
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
+      if (session) setUser(await buildUser(session))
+    })
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (_event, session) => {
+        if (session) setUser(await buildUser(session))
+        else setUser(null)
+      }
+    )
+    return () => subscription.unsubscribe()
+  }, [])
+
+  const login = async (email: string, password: string) => {
+    const { error } = await supabase.auth.signInWithPassword({ email, password })
+    if (error) return { error: error.message }
+    return {}
+  }
+
+  const logout = async () => {
+    await supabase.auth.signOut()
     setUser(null)
   }
 
-  const switchRole = (role: UserRole) => {
-    setUser(mockUsers[role])
-  }
+  const switchRole = (_role: UserRole) => {}
 
   return (
-    <AuthContext.Provider value={{ user, isAuthenticated: !!user, login, logout, switchRole }}>
+    
       {children}
-    </AuthContext.Provider>
+    
   )
 }
 
 export function useAuth() {
   const context = useContext(AuthContext)
-  if (context === undefined) {
-    throw new Error('useAuth must be used within an AuthProvider')
-  }
+  if (context === undefined) throw new Error('useAuth must be used within an AuthProvider')
   return context
 }
